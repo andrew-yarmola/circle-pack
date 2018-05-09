@@ -189,30 +189,29 @@ def bezier_control_points(data) :
                       
     return (P1, P2)
 
-def _get_point(evt):
-    return (evt.pos().x(),evt.pos().y())
-
 from itertools import starmap
 
 class ParamSpace(QWidget) :
 
-    drag_dist = 4
+    err_dist = 4
     max_t = 2.5
     scale = (400.,195.)
     shift = (20.,490.)
     default_param = (sqrt(2.) - 1., 1./sqrt(2))
-    hex_param_1 = (0.30557132498416676354695417221753673, 0.3466380372845119285587105)
-    hex_param_2 = (0.30557132498416676354695417221753673, 1.44242681477454929484179805241)
+    hex_params = [(0.30557132498416676354695417221753673, 0.3466380372845119285587105),
+                  (0.30557132498416676354695417221753673, 1.44242681477454929484179805241)]
+    fun_params = [(0.412,0.6485),(0.40088,0.5691), (0.580306,1./sqrt(2)), (0.45616,0.58936), (0.25,1.0), (0.40054,1./sqrt(2))]
     cut_start = (0, 1./sqrt(2))
     cut_end = (1./sqrt(2), 1./sqrt(2))
 
     def __init__(self, parent, packing_canvas, dash) :
         super().__init__(parent)
-        self.default_canvas = QPointF(*self.to_canvas(self.default_param))
-        self.hex_1_canvas = QPointF(*self.to_canvas(self.hex_param_1))
-        self.hex_2_canvas = QPointF(*self.to_canvas(self.hex_param_2))
-        self.cut_start_canvas = QPointF(*self.to_canvas(self.cut_start))
-        self.cut_end_canvas = QPointF(*self.to_canvas(self.cut_end))
+        self.default_canvas = self.to_canvas(self.default_param)
+        self.hex_canvas = [self.to_canvas(x) for x in self.hex_params]
+        self.fun_canvas = [self.to_canvas(x) for x in self.fun_params]
+        self.special_canvas = self.fun_canvas + self.hex_canvas
+        self.cut_start_canvas = self.to_canvas(self.cut_start)
+        self.cut_end_canvas = self.to_canvas(self.cut_end)
         self._is_dragging = False
         self._packing_canvas = packing_canvas
         self._packing_canvas.param = self.param
@@ -247,7 +246,8 @@ class ParamSpace(QWidget) :
         if not hasattr(self, '_param_bound_points') :
             t = np.arange(0., self.max_t + 0.1, 0.1)
             s = (2*t)/(1 + 2*t**2)
-            self._param_bound_points = np.array(list(map(self.to_canvas,zip(s,t))))
+            self._param_bound_points = np.array(list(map(lambda p : (p.x(),p.y()),
+                                                     map(self.to_canvas,zip(s,t)))))
         return self._param_bound_points
  
     @property
@@ -255,7 +255,8 @@ class ParamSpace(QWidget) :
         if not hasattr(self, '_unit_unif_points') :
             t = np.arange(0.00000000000001, self.max_t + 0.1, 0.1)
             s = (1 + 2*t**2 - sqrt(1 + 4*t**4))/(2*t)
-            self._unit_unif_points = np.array(list(map(self.to_canvas,zip(s,t))))
+            self._unit_unif_points = np.array(list(map(lambda p : (p.x(),p.y()),
+                                                   map(self.to_canvas,zip(s,t)))))
         return self._unit_unif_points
 
     def _get_canvas_path(self, points) :
@@ -296,10 +297,13 @@ class ParamSpace(QWidget) :
     def draw_params(self, painter) :
         painter.setBrush(Qt.black)
         painter.drawEllipse(self.default_canvas,4.,4.)
-        painter.drawEllipse(self.hex_1_canvas,4.,4.)
-        painter.drawEllipse(self.hex_2_canvas,4.,4.)
+        for p in self.hex_canvas :
+            painter.drawEllipse(p,4.,4.)
+        painter.setBrush(Qt.blue)
+        for p in self.fun_canvas :
+            painter.drawEllipse(p,4.,4.) 
         painter.setBrush(Qt.red)
-        painter.drawEllipse(QPointF(*self.param_canvas),4.,4.)
+        painter.drawEllipse(self.param_canvas,4.,4.)
     
     def paintEvent(self, event) :
         painter = QPainter(self)
@@ -308,21 +312,23 @@ class ParamSpace(QWidget) :
         self.draw_params(painter)
 
     def to_plane(self, p) :
-        return ((p[0] - self.shift[0])/self.scale[0],
-                (self.shift[1] - p[1])/self.scale[1])
+        return ((p.x() - self.shift[0])/self.scale[0],
+                (self.shift[1] - p.y())/self.scale[1])
 
     def to_canvas(self, p) :
-        return (self.shift[0] + self.scale[0]*p[0],
-                self.shift[1] - self.scale[1]*p[1])
+        return QPointF(self.shift[0] + self.scale[0]*p[0],
+                       self.shift[1] - self.scale[1]*p[1])
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and not self._is_dragging:
-            point = _get_point(event)
-            diff = tuple(self.param_canvas[i] - point[i] for i in range(2))
-            dist = sqrt(sum(d**2 for d in diff))
-            if dist < self.drag_dist :
+            point = event.pos()
+            diff = self.param_canvas - point
+            dist = QPointF.dotProduct(diff,diff) 
+            if dist < self.err_dist :
                 self._is_dragging = True
                 self._drag_diff = diff
+            else :
+                self._jump_click = True;
 
     def _move_param(self, p, point = None) :
         if 0 < p[0] and p[1] <= self.max_t and p[0] <= (2*p[1])/(1 + 2*p[1]**2) :
@@ -335,16 +341,31 @@ class ParamSpace(QWidget) :
             self._dashboard.param = self.param
             self._packing_canvas.param = self.param
 
+    def snap_special_or_self(self, p) :
+        for q in self.special_canvas :
+            diff = q - p
+            dist = QPointF.dotProduct(diff,diff)
+            if dist < self.err_dist :
+                return q
+        return p
+
     def mouseMoveEvent(self, event):
         if self._is_dragging :
-            e_pt = _get_point(event)
-            canv_pt = (e_pt[0]+self._drag_diff[0], e_pt[1]+self._drag_diff[1])
+            e_pt = event.pos()
+            canv_pt = e_pt + self._drag_diff
             p = self.to_plane(canv_pt)
             self._move_param(p, canv_pt)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton and self._is_dragging :
-            self._is_dragging = False
+        if event.button() == Qt.LeftButton :
+            if self._is_dragging :
+                self._is_dragging = False
+            elif self._jump_click :
+                e_pt = event.pos()
+                canv_pt = self.snap_special_or_self(e_pt)
+                p = self.to_plane(canv_pt)
+                self._move_param(p, canv_pt)
+                self._jump_click = False
 
 class ParamField(QLineEdit) :
     def __init__(self, dash) :
@@ -483,7 +504,8 @@ class PackingCanvas(QWidget) :
     def __init__(self,parent) :
         super().__init__(parent)
         self._is_dragging  = False
-        self._center_offset = (0.,0.)
+        self._jump_click  = False
+        self._center_offset = QPointF(0.,0.)
         self._num_H = 5
         self._num_V  = 4
         self._zoom_buttons = [QPushButton("-",self), QPushButton("+",self)]
@@ -500,7 +522,7 @@ class PackingCanvas(QWidget) :
             b.clicked.connect(self._V_delta)
 
     def _reset(self) :
-        self._center_offset = (0.,0.)
+        self._center_offset = QPointF(0.,0.)
         del self._scale
         self._num_H = 5
         self._num_V = 4
@@ -622,8 +644,8 @@ class PackingCanvas(QWidget) :
 
     def draw_circles(self, painter) :
         
-        c_x = self._center_offset[0] + self.width()/2.
-        c_y = self._center_offset[1] + self.height()/2.
+        c_x = self._center_offset.x() + self.width()/2.
+        c_y = self._center_offset.y() + self.height()/2.
         
         for type, circles in self.circles.items() :
             
@@ -656,15 +678,13 @@ class PackingCanvas(QWidget) :
     def mousePressEvent(self, event) :
         if event.button() == Qt.LeftButton and not self._is_dragging:
             self._is_dragging = True
-            self._drag_start = _get_point(event)
+            self._drag_start = event.pos()
             self._ref_offset = self._center_offset
 
     def mouseMoveEvent(self, event) :
         if self._is_dragging :
-            p = _get_point(event)
-            new_x = self._ref_offset[0] + p[0] - self._drag_start[0]
-            new_y = self._ref_offset[1] + p[1] - self._drag_start[1]
-            self._center_offset = (new_x,new_y)
+            p = event.pos()
+            self._center_offset = self._ref_offset + p - self._drag_start
             self.update()
 
     def mouseReleaseEvent(self, event):
